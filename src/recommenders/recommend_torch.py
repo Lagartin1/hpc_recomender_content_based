@@ -17,16 +17,12 @@ def _validate_inputs(
 
 
 def _resolve_device(device: str) -> torch.device:
-    if device not in {"auto", "cuda", "cpu"}:
-        raise ValueError("device debe ser 'auto', 'cuda' o 'cpu'")
+    if device not in {"auto", "cuda"}:
+        raise ValueError("device debe ser 'auto' o 'cuda'")
 
-    if device == "cpu":
-        return torch.device("cpu")
     if torch.cuda.is_available():
         return torch.device("cuda")
-    if device == "cuda":
-        raise RuntimeError("device='cuda' solicitado, pero PyTorch no detecta CUDA.")
-    return torch.device("cpu")
+    raise RuntimeError("La version Torch requiere GPU CUDA. Usa la version NumPy para CPU.")
 
 
 def _recommend_block_torch(
@@ -72,9 +68,8 @@ def top_k_recommendations_torch(
     Recomendaciones top-k vectorizadas con PyTorch.
 
     device:
-        "auto": usa CUDA si PyTorch la detecta; si no, CPU.
+        "auto": usa CUDA si PyTorch la detecta; si no, falla.
         "cuda": exige CUDA.
-        "cpu": fuerza CPU con PyTorch.
     block_size:
         Cantidad de usuarios procesados por bloque. Si es None, procesa todos.
         En GPU conviene usar bloques para limitar VRAM.

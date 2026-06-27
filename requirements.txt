@@ -1,4 +1,7 @@
 numpy
 ray
-torch
 psutil
+codecarbon
+matplotlib
+--extra-index-url https://download.pytorch.org/whl/cu128
+torch==2.11.0+cu128

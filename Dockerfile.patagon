@@ -1,0 +1,18 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+
+ENV PYTHONUNBUFFERED=1
+ENV OMP_NUM_THREADS=1
+ENV OPENBLAS_NUM_THREADS=1
+ENV MKL_NUM_THREADS=1
+ENV NUMEXPR_NUM_THREADS=1
+ENV VECLIB_MAXIMUM_THREADS=1
+ENV RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO=0
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY src ./src
+
+CMD ["python", "src/benchmark_amazon/run_amazon_patagon.py", "--backends", "numpy,ray_cpu", "--block-size", "500", "--ray-max-in-flight", "4", "--csv", "/app/results/amazon_patagon_cpu_benchmark.csv", "--output-dir", "/app/results"]

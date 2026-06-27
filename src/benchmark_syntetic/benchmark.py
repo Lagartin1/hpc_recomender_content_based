@@ -4,21 +4,27 @@ import glob
 import os
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Callable
 
 import numpy as np
 
-from create_syntetic import (
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from src.benchmark_syntetic.create_syntetic import (
     build_user_profiles,
     generate_items_embeddings,
     generate_user_interactions,
 )
-from recommend_ray import top_k_recommendations_ray
-from recommend_torch import top_k_recommendations_torch
-from recommend_vectorized import top_k_recommendations
+from src.benchmark_utils.resource_metrics import start_codecarbon_tracker, stop_codecarbon_tracker
+from src.recommenders.recommend_ray import top_k_recommendations_ray
+from src.recommenders.recommend_torch import top_k_recommendations_torch
+from src.recommenders.recommend_vectorized import top_k_recommendations
 
 try:
     import psutil
@@ -47,6 +53,11 @@ class BenchmarkResult:
     cpu_energy_wh: float | None
     gpu_energy_wh: float | None
     total_energy_wh: float | None
+    codecarbon_energy_kWh: float | str
+    codecarbon_emissions_kg: float | str
+    codecarbon_cpu_energy_kWh: float | str
+    codecarbon_gpu_energy_kWh: float | str
+    codecarbon_ram_energy_kWh: float | str
     notes: str
 
 
@@ -220,10 +231,14 @@ def _run_one(
     if cpu_energy_start is None:
         notes.append("sin RAPL para potencia CPU")
 
+    codecarbon_tracker = start_codecarbon_tracker(args.sample_interval, notes)
     with ResourceSampler(args.sample_interval) as sampler:
         start = time.perf_counter()
-        fn()
-        elapsed = time.perf_counter() - start
+        try:
+            fn()
+        finally:
+            elapsed = time.perf_counter() - start
+            codecarbon_metrics = stop_codecarbon_tracker(codecarbon_tracker, notes)
 
     cpu_energy_j = _energy_delta_j(cpu_energy_start, _read_rapl_energy_uj())
     gpu_energy_j = sampler.gpu_energy_j
@@ -254,6 +269,11 @@ def _run_one(
         cpu_energy_wh=_joules_to_wh(cpu_energy_j),
         gpu_energy_wh=_joules_to_wh(gpu_energy_j),
         total_energy_wh=_joules_to_wh(total_energy_j),
+        codecarbon_energy_kWh=codecarbon_metrics["codecarbon_energy_kWh"],
+        codecarbon_emissions_kg=codecarbon_metrics["codecarbon_emissions_kg"],
+        codecarbon_cpu_energy_kWh=codecarbon_metrics["codecarbon_cpu_energy_kWh"],
+        codecarbon_gpu_energy_kWh=codecarbon_metrics["codecarbon_gpu_energy_kWh"],
+        codecarbon_ram_energy_kWh=codecarbon_metrics["codecarbon_ram_energy_kWh"],
         notes="; ".join(dict.fromkeys(notes)),
     )
 
@@ -281,6 +301,11 @@ def print_results(results: list[BenchmarkResult]) -> None:
         "cpu_energy_Wh",
         "gpu_energy_Wh",
         "total_energy_Wh",
+        "codecarbon_energy_kWh",
+        "codecarbon_emissions_kg",
+        "codecarbon_cpu_energy_kWh",
+        "codecarbon_gpu_energy_kWh",
+        "codecarbon_ram_energy_kWh",
         "notes",
     ]
     rows = [
@@ -298,6 +323,11 @@ def print_results(results: list[BenchmarkResult]) -> None:
             _format(result.cpu_energy_wh, digits=6),
             _format(result.gpu_energy_wh, digits=6),
             _format(result.total_energy_wh, digits=6),
+            _format(result.codecarbon_energy_kWh, digits=6),
+            _format(result.codecarbon_emissions_kg, digits=6),
+            _format(result.codecarbon_cpu_energy_kWh, digits=6),
+            _format(result.codecarbon_gpu_energy_kWh, digits=6),
+            _format(result.codecarbon_ram_energy_kWh, digits=6),
             result.notes,
         ]
         for result in results
@@ -336,8 +366,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--versions",
         nargs="+",
-        choices=["vectorized", "vectorized_gpu", "ray"],
-        default=["vectorized", "vectorized_gpu", "ray"],
+        choices=["numpy", "torch_gpu", "ray"],
+        default=["numpy", "torch_gpu", "ray"],
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--sample-interval", type=float, default=0.05)
@@ -347,6 +377,8 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    if "torch_gpu" in args.versions and args.device == "cpu":
+        raise ValueError("torch_gpu requiere CUDA. Usa --versions numpy para CPU.")
 
     item_embeddings = generate_items_embeddings(args.items, args.dim, seed=args.seed)
     interactions = generate_user_interactions(
@@ -358,10 +390,10 @@ def main() -> None:
     user_profiles = build_user_profiles(None, item_embeddings, interactions)
 
     benchmarks: list[tuple[str, Callable[[], tuple[np.ndarray, np.ndarray]], int | None, str]] = []
-    if "vectorized" in args.versions:
+    if "numpy" in args.versions:
         benchmarks.append(
             (
-                "vectorized",
+                "numpy",
                 lambda: top_k_recommendations(
                     user_profiles,
                     item_embeddings,
@@ -372,10 +404,10 @@ def main() -> None:
                 "cpu",
             )
         )
-    if "vectorized_gpu" in args.versions:
+    if "torch_gpu" in args.versions:
         benchmarks.append(
             (
-                "vectorized_gpu",
+                "torch_gpu",
                 lambda: top_k_recommendations_torch(
                     user_profiles,
                     item_embeddings,
@@ -385,7 +417,7 @@ def main() -> None:
                     device=args.device,
                 ),
                 args.block_size,
-                args.device,
+                "cuda" if args.device == "auto" else args.device,
             )
         )
     if "ray" in args.versions:
