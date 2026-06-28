@@ -15,4 +15,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY src ./src
 
-CMD ["python", "src/benchmark_amazon/run_amazon_patagon.py", "--backends", "numpy,ray_cpu", "--block-size", "500", "--ray-max-in-flight", "4", "--csv", "/app/results/amazon_patagon_cpu_benchmark.csv", "--output-dir", "/app/results"]
+CMD ["python", "src/benchmark_amazon/run_amazon_patagon.py", "--backends", "ray_cpu", "--block-size", "250", "--ray-max-in-flight", "2", "--csv", "/app/results/amazon_patagon_cpu_benchmark.csv", "--output-dir", "/app/results"]

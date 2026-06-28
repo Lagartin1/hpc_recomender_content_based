@@ -183,6 +183,7 @@ def run_backend(args: argparse.Namespace, backend: str, dataset) -> tuple[np.nda
             dataset.item_embeddings,
             dataset.interactions,
             k=args.k,
+            block_size=args.block_size,
         )
     if backend == "torch_gpu":
         return top_k_recommendations_torch(
