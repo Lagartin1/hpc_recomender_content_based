@@ -20,6 +20,11 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 
 
+TITLE_FONT_SIZE = 18
+AXIS_LABEL_FONT_SIZE = 15
+TICK_LABEL_FONT_SIZE = 15
+LEGEND_FONT_SIZE = 12
+
 DEFAULT_METRICS = [
     "recommendation_time_s",
     "throughput_comparisons_s",
@@ -215,13 +220,24 @@ def plot_metric(
         ax.plot(x, y, marker="o", linewidth=2, label=series)
 
     metric_label = METRIC_LABELS.get(metric, metric)
-    ax.set_title(f"{title_prefix}: {metric_label}")
-    ax.set_xlabel("Tamano del problema")
-    ax.set_ylabel(metric_label)
+    ax.set_title(
+        f"{title_prefix}: {metric_label}",
+        fontsize=TITLE_FONT_SIZE,
+        fontweight="bold",
+        pad=14,
+    )
+    ax.set_xlabel("Tamano del problema", fontsize=AXIS_LABEL_FONT_SIZE)
+    ax.set_ylabel(metric_label, fontsize=AXIS_LABEL_FONT_SIZE)
     ax.set_xticks(x_positions)
-    ax.set_xticklabels(scenarios, rotation=25, ha="right")
+    ax.set_xticklabels(
+        scenarios,
+        rotation=25,
+        ha="right",
+        fontsize=TICK_LABEL_FONT_SIZE,
+    )
+    ax.tick_params(axis="y", labelsize=TICK_LABEL_FONT_SIZE)
     ax.grid(True, linestyle="--", linewidth=0.5, alpha=0.6)
-    ax.legend(loc="best")
+    ax.legend(loc="best", fontsize=LEGEND_FONT_SIZE)
     fig.tight_layout()
     return fig
 
