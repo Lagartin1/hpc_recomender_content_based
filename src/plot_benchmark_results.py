@@ -18,16 +18,33 @@ from typing import Iterable
 
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
+from matplotlib.ticker import EngFormatter
 
 
-TITLE_FONT_SIZE = 18
-AXIS_LABEL_FONT_SIZE = 15
+TITLE_FONT_SIZE = 22
+AXIS_LABEL_FONT_SIZE = 18
 TICK_LABEL_FONT_SIZE = 15
-LEGEND_FONT_SIZE = 12
+LEGEND_FONT_SIZE = 15
+
+DEFAULT_INPUTS = [
+    "results/amazon_local_cpu_benchmark.csv",
+    "results/amazon_local_cuda_benchmark.csv",
+    "results/amazon_patagon_numpy_resume_benchmark.csv",
+    "results/amazon_patagon_ray_cpu_resume_benchmark.csv",
+    "results/amazon_patagon_cuda_resume_benchmark.csv",
+]
+
+DEFAULT_EXCLUDED_SCENARIOS = {
+    ("patagon", "10000", "50000"),
+}
 
 DEFAULT_METRICS = [
     "recommendation_time_s",
     "throughput_comparisons_s",
+    "speedup",
+    "spedup",
+    "speedup_throughput",
+    "speedup_time",
     "cpu_avg_%",
     "cpu_peak_%",
     "ram_peak_MB",
@@ -48,6 +65,12 @@ DEFAULT_METRICS = [
 METRIC_LABELS = {
     "recommendation_time_s": "Tiempo de recomendacion (s)",
     "throughput_comparisons_s": "Throughput (comparaciones/s)",
+    "speedup": "Speedup",
+    "spedup": "Speedup",
+    "speedup_x": "Speedup",
+    "speedup_vs_numpy": "Speedup vs NumPy",
+    "speedup_throughput": "Speedup por throughput vs NumPy",
+    "speedup_time": "Speedup por tiempo vs NumPy",
     "cpu_avg_%": "CPU promedio (%)",
     "cpu_peak_%": "CPU maximo (%)",
     "ram_peak_MB": "RAM maxima (MB)",
@@ -73,8 +96,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--input",
         nargs="+",
-        default=["results/*.csv"],
-        help="Archivos CSV o patrones glob. Por defecto: results/*.csv",
+        default=DEFAULT_INPUTS,
+        help=(
+            "Archivos CSV o patrones glob. Por defecto usa los CSV locales y "
+            "los CSV resume de Patagon si existen."
+        ),
     )
     parser.add_argument(
         "--output-pdf",
@@ -101,6 +127,12 @@ def parse_args() -> argparse.Namespace:
         "--title-prefix",
         default="Benchmark recomendador content-based",
         help="Prefijo para los titulos de los graficos.",
+    )
+    parser.add_argument(
+        "--series",
+        choices=["backend", "environment_backend", "source_backend"],
+        default="backend",
+        help="Como agrupar las lineas. Por defecto: backend para mostrar los 4 metodos.",
     )
     return parser.parse_args()
 
@@ -145,55 +177,155 @@ def parse_float(value: str | None) -> float | None:
 
 def load_rows(paths: Iterable[Path], include_errors: bool) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
+    excluded_rows = 0
     for path in paths:
         with path.open(newline="", encoding="utf-8-sig") as handle:
             reader = csv.DictReader(handle)
             for row in reader:
                 if not include_errors and row.get("status", "").lower() != "ok":
                     continue
+                if is_excluded_scenario(row):
+                    excluded_rows += 1
+                    continue
                 row["source_file"] = path.name
                 rows.append(row)
 
     if not rows:
         raise ValueError("No hay filas validas para graficar despues de aplicar filtros.")
+    if excluded_rows:
+        print(f"[filter] filas excluidas por escenario: {excluded_rows}")
+    add_derived_speedups(rows)
     return rows
 
 
+def is_excluded_scenario(row: dict[str, str]) -> bool:
+    key = (
+        row.get("environment", "").strip().lower(),
+        normalize_count(row.get("requested_users") or row.get("users")),
+        normalize_count(row.get("requested_items") or row.get("items")),
+    )
+    return key in DEFAULT_EXCLUDED_SCENARIOS
+
+
+def normalize_count(value: str | None) -> str:
+    number = parse_float(value)
+    if number is None:
+        return (value or "").strip()
+    return f"{number:g}"
+
+
+def add_derived_speedups(rows: list[dict[str, str]]) -> None:
+    baselines: dict[tuple[str, str], dict[str, float]] = {}
+
+    for row in rows:
+        if row.get("backend", "").strip() != "numpy":
+            continue
+
+        key = baseline_key(row)
+        recommendation_time = parse_float(row.get("recommendation_time_s"))
+        throughput = parse_float(row.get("throughput_comparisons_s"))
+        baseline = baselines.setdefault(key, {})
+        if recommendation_time and recommendation_time > 0:
+            baseline["recommendation_time_s"] = recommendation_time
+        if throughput and throughput > 0:
+            baseline["throughput_comparisons_s"] = throughput
+
+    for row in rows:
+        baseline = baselines.get(baseline_key(row), {})
+
+        throughput = parse_float(row.get("throughput_comparisons_s"))
+        baseline_throughput = baseline.get("throughput_comparisons_s")
+        if throughput and baseline_throughput and baseline_throughput > 0:
+            row.setdefault("speedup_throughput", str(throughput / baseline_throughput))
+
+        recommendation_time = parse_float(row.get("recommendation_time_s"))
+        baseline_time = baseline.get("recommendation_time_s")
+        if recommendation_time and baseline_time and recommendation_time > 0:
+            row.setdefault("speedup_time", str(baseline_time / recommendation_time))
+
+
+def baseline_key(row: dict[str, str]) -> tuple[str, str]:
+    return (row.get("environment", "").strip(), scenario_label(row))
+
+
 def scenario_label(row: dict[str, str]) -> str:
-    users = row.get("users") or row.get("requested_users") or "?"
-    items = row.get("items") or row.get("requested_items") or "?"
-    return f"{users}u x {items}i"
+    environment = row.get("environment", "").strip()
+    requested_users = row.get("requested_users") or row.get("users") or "?"
+    requested_items = row.get("requested_items") or row.get("items") or "?"
+
+    requested_label = f"{compact_count(requested_users)} U x {compact_count(requested_items)} I"
+    prefix = f"{environment.title()}\n" if environment else ""
+    return f"{prefix}{requested_label}"
 
 
-def series_label(row: dict[str, str]) -> str:
+def series_label(row: dict[str, str], mode: str) -> str:
     environment = row.get("environment", "").strip()
     backend = row.get("backend", "").strip()
+    source_file = row.get("source_file", "serie")
+
+    if mode == "backend":
+        return backend or environment or source_file
+    if mode == "source_backend":
+        return f"{source_file} / {backend}" if backend else source_file
+
     if environment and backend:
         return f"{environment} / {backend}"
-    return backend or environment or row.get("source_file", "serie")
+    return backend or environment or source_file
 
 
 def scenario_sort_key(label: str) -> tuple[int, int, str]:
-    match = re.match(r"(\d+)u x (\d+)i", label)
+    match = re.search(r"([\d.]+)([KMB]?) U x ([\d.]+)([KMB]?) I", label)
     if not match:
         return (0, 0, label)
-    return (int(match.group(1)), int(match.group(2)), label)
+    users = expand_compact_count(match.group(1), match.group(2))
+    items = expand_compact_count(match.group(3), match.group(4))
+    return (users, items, label)
+
+
+def compact_count(value: str) -> str:
+    number = parse_float(value)
+    if number is None:
+        return value
+
+    if number >= 1_000_000_000:
+        return f"{number / 1_000_000_000:g}B"
+    if number >= 1_000_000:
+        return f"{number / 1_000_000:g}M"
+    if number >= 1_000:
+        return f"{number / 1_000:g}K"
+    return f"{number:g}"
+
+
+def expand_compact_count(value: str, suffix: str) -> int:
+    multiplier = {"": 1, "K": 1_000, "M": 1_000_000, "B": 1_000_000_000}[suffix]
+    return int(float(value) * multiplier)
 
 
 def filename_for_metric(metric: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_-]+", "_", metric).strip("_").lower()
 
 
+def metric_value(row: dict[str, str], metric: str) -> str | None:
+    if metric in row:
+        return row.get(metric)
+
+    normalized_metric = metric.lower()
+    for key, value in row.items():
+        if key.lower() == normalized_metric:
+            return value
+    return None
+
+
 def collect_metric_points(
-    rows: Iterable[dict[str, str]], metric: str
+    rows: Iterable[dict[str, str]], metric: str, series_mode: str
 ) -> dict[str, dict[str, float]]:
     grouped: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
 
     for row in rows:
-        value = parse_float(row.get(metric))
+        value = parse_float(metric_value(row, metric))
         if value is None:
             continue
-        grouped[series_label(row)][scenario_label(row)].append(value)
+        grouped[series_label(row, series_mode)][scenario_label(row)].append(value)
 
     return {
         series: {scenario: sum(values) / len(values) for scenario, values in scenarios.items()}
@@ -212,12 +344,12 @@ def plot_metric(
     )
     x_positions = list(range(len(scenarios)))
 
-    fig, ax = plt.subplots(figsize=(11.69, 8.27))
+    fig, ax = plt.subplots(figsize=(13.5, 7.0))
     for series in sorted(points_by_series):
         values = [points_by_series[series].get(scenario) for scenario in scenarios]
         x = [pos for pos, value in zip(x_positions, values) if value is not None]
         y = [value for value in values if value is not None]
-        ax.plot(x, y, marker="o", linewidth=2, label=series)
+        ax.plot(x, y, marker="o", markersize=7, linewidth=3, label=series)
 
     metric_label = METRIC_LABELS.get(metric, metric)
     ax.set_title(
@@ -226,19 +358,31 @@ def plot_metric(
         fontweight="bold",
         pad=14,
     )
-    ax.set_xlabel("Tamano del problema", fontsize=AXIS_LABEL_FONT_SIZE)
+    ax.set_xlabel(
+        "Escenario de prueba (entorno y tamano solicitado)",
+        fontsize=AXIS_LABEL_FONT_SIZE,
+    )
     ax.set_ylabel(metric_label, fontsize=AXIS_LABEL_FONT_SIZE)
     ax.set_xticks(x_positions)
     ax.set_xticklabels(
         scenarios,
-        rotation=25,
+        rotation=20,
         ha="right",
         fontsize=TICK_LABEL_FONT_SIZE,
     )
     ax.tick_params(axis="y", labelsize=TICK_LABEL_FONT_SIZE)
+    ax.yaxis.set_major_formatter(EngFormatter())
     ax.grid(True, linestyle="--", linewidth=0.5, alpha=0.6)
-    ax.legend(loc="best", fontsize=LEGEND_FONT_SIZE)
-    fig.tight_layout()
+    ax.legend(
+        loc="upper left",
+        ncol=1,
+        fontsize=LEGEND_FONT_SIZE,
+        frameon=True,
+        framealpha=0.88,
+        facecolor="white",
+        edgecolor="#d0d0d0",
+    )
+    fig.subplots_adjust(left=0.10, right=0.98, top=0.86, bottom=0.22)
     return fig
 
 
@@ -255,7 +399,7 @@ def main() -> int:
     created_metrics: list[str] = []
     with PdfPages(output_pdf) as pdf:
         for metric in args.metrics:
-            points = collect_metric_points(rows, metric)
+            points = collect_metric_points(rows, metric, args.series)
             if not points:
                 print(f"[skip] {metric}: sin valores numericos")
                 continue
